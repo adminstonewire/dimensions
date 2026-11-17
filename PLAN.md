@@ -190,6 +190,6 @@ Capture (6) can be pulled forward as soon as footage is needed; it only depends 
 - 4D retina view may be too heavy for laptops → fall back to lower voxel count; spike early.
 - "Real physics" at 5–10 is real maths about unconfirmed theory → captions always say so.
 - Newtonian "gravity" in 2D is an analogy (see PHYSICS.md) → Lab uses the wording there.
-- Engine cost: the heaviest test scene (20 creatures, 20 balls, 4D) takes 5.7 ms per step
-  after the contact fixes → keep scenes small; reusing contact impulses between substeps
-  is the known remedy if a scene needs more.
+- Engine cost: the heaviest test scene (20 creatures, 20 balls, 4D) takes about 6.5 ms
+  per step after the contact and friction fixes → keep scenes small; reusing contact
+  impulses between substeps is the known remedy if a scene needs more.

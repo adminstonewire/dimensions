@@ -20,19 +20,22 @@ import { STEP } from '../contracts';
 //   contact acts on the whole body. A two-ball hit with e = 1 gives the exact elastic result;
 //   a creature dropped onto a vertex bounces back at 0.993–0.998 × e (measured from apex
 //   height, dim 2–4, e = 0.5 and 1; it was 0.02–0.3 before body links joined this solve).
+//   A linked body slides at g(sinθ − μcosθ) and stops after v²/(2μg) to 1e-5, and holds
+//   below the friction angle to ~1e-8 m/s (measured, dim 2–4).
 //   Approximations: contacts are found once per substep, so one created during the solve
 //   waits for the next substep; time of impact assumes constant acceleration within a
-//   substep; the velocity solve stops at VEL_TOL.
+//   substep; the velocity solve stops at VEL_TOL or MAX_VEL_ITERS.
 
 /** Substeps per STEP. A ball moves v·STEP/8 per substep, so it cannot tunnel while that is below its radius. */
 export const SUBSTEPS = 8;
 const MAX_ITERS = 4;
 /** Relative constraint error at which the position solve may stop early (free particles need zero iterations). */
 const TOL = 1e-9;
-// The velocity solve must carry an impulse through a whole body, which Gauss–Seidel does
-// slowly: it needs up to ~64 iterations, and stops once no correction exceeds VEL_TOL (m/s).
+// The velocity solve must carry an impulse through a whole body. Gauss–Seidel does that
+// slowly from a cold start, so link impulses are warm-started from the last substep (a
+// resting body then converges in ~2 passes); it stops once no correction exceeds VEL_TOL (m/s).
 const MAX_VEL_ITERS = 64;
-const VEL_TOL = 1e-4;
+const VEL_TOL = 1e-6;
 
 /** Solid half-space: points with x·normal < offset are inside the solid. */
 export interface Plane {
@@ -71,10 +74,19 @@ export class World {
 
   private acc = new Float64Array(0);
   private old = new Float64Array(0);
-  /** Per contact (stride 8): kind (0 ball, 1 plane, 2 box), particle a, other b, free normal speed at substep end, target gap, target normal speed, normal impulse, friction impulse (both per unit inverse mass). */
+  /** Per contact (stride 7): kind (0 ball, 1 plane, 2 box), particle a, other b, free normal speed at substep end, target gap, target normal speed, accumulated normal impulse. */
   private contacts: number[] = [];
   /** Per particle (as body id): its body has a contact this substep. */
   private touched = new Uint8Array(0);
+  /**
+   * Velocity-solve impulse per link from the last substep, reused as the starting guess
+   * (warm start). A body at rest solves the same problem every substep; from a cold start
+   * Gauss–Seidel needed 50–100 passes, and stopping early left a residual velocity that made
+   * stuck bodies creep. Part of the snapshot, so restore stays bit-exact.
+   */
+  private linkImp = new Float64Array(0);
+  /** Accumulated friction impulse per contact, a tangential vector (dim per contact). */
+  private fric = new Float64Array(0);
   private order: number[] = [];
   private lo = new Float64Array(0);
   private n: Float64Array;
@@ -109,13 +121,22 @@ export class World {
 
   /** Stiff link holding i and j at their current distance. Make links through createBody: linked particles outside a body still collide with each other. */
   addLink(i: number, j: number): void {
+    this.checkPair(i, j);
     const length = Math.sqrt(this.dist2(i, j));
     if (!(length > 0)) throw new Error('cannot link two particles at the same place');
     this.links.push({ i, j, length });
   }
 
   addSpring(i: number, j: number, stiffness: number, length: number): void {
+    this.checkPair(i, j);
+    if (!(stiffness >= 0 && stiffness < Infinity)) throw new Error(`spring stiffness must be finite and >= 0, got ${stiffness}`);
+    if (!(length >= 0 && length < Infinity)) throw new Error(`spring length must be finite and >= 0, got ${length}`);
     this.springs.push({ i, j, stiffness, length });
+  }
+
+  private checkPair(i: number, j: number): void {
+    for (const p of [i, j]) if (!Number.isInteger(p) || p < 0 || p >= this.count) throw new Error(`no particle ${p}`);
+    if (i === j) throw new Error('cannot join a particle to itself');
   }
 
   addPlane(normal: ArrayLike<number>, offset: number): void {
@@ -203,21 +224,32 @@ export class World {
     return e;
   }
 
-  /** Everything step() changes, plus confinement: [pos, vel, free]. Structure (particles, links, planes, parameters) is not included. */
+  /** Everything step() changes, plus confinement: [pos, vel, free, link impulses (the solver's warm start)]. Structure (particles, links, planes, parameters) is not included. */
   snapshot(): Float64Array {
-    const nd = this.pos.length, out = new Float64Array(2 * nd + this.count);
+    const nd = this.pos.length, out = new Float64Array(2 * nd + this.count + this.links.length);
     out.set(this.pos, 0);
     out.set(this.vel, nd);
     out.set(this.free, 2 * nd);
+    out.set(this.linkImpulses(), 2 * nd + this.count);
     return out;
   }
 
   restore(s: Float64Array): void {
     const nd = this.pos.length;
-    if (s.length !== 2 * nd + this.count) throw new Error('snapshot does not match this world');
+    if (s.length !== 2 * nd + this.count + this.links.length) throw new Error('snapshot does not match this world');
     this.pos.set(s.subarray(0, nd));
     this.vel.set(s.subarray(nd, 2 * nd));
     for (let i = 0; i < this.count; i++) this.free[i] = s[2 * nd + i];
+    this.linkImpulses().set(s.subarray(2 * nd + this.count));
+  }
+
+  private linkImpulses(): Float64Array {
+    if (this.linkImp.length !== this.links.length) {
+      const a = new Float64Array(this.links.length);
+      a.set(this.linkImp.subarray(0, Math.min(a.length, this.linkImp.length)));
+      this.linkImp = a;
+    }
+    return this.linkImp;
   }
 
   private dist2(i: number, j: number): number {
@@ -304,7 +336,7 @@ export class World {
 
   private tryContact(kind: number, a: number, b: number): void {
     const c = this.contacts.length;
-    this.contacts.push(kind, a, b, 0, 0, 0, 0, 0);
+    this.contacts.push(kind, a, b, 0, 0, 0, 0);
     const g = this.gap(c);
     if (g >= 0) {
       this.contacts.length = c;
@@ -430,13 +462,14 @@ export class World {
     const d = this.dim, { pos, old, contacts: cs, n: r, t: x } = this;
     for (let iter = 0; iter < MAX_ITERS; iter++) {
       let err = 0;
-      for (let c = 0; c < cs.length; c += 8) {
+      for (let c = 0; c < cs.length; c += 7) {
         const g = this.gap(c) - cs[c + 4];
         if (g >= 0) continue;
         const a = cs[c + 1], b = this.other(c), w = this.movable(a, b, this.n);
         if (w === 0) continue;
         err = Math.max(err, -g / (this.radius[a] + (b >= 0 ? this.radius[b] : 0) || 1));
         this.push(pos, a, b, this.n, -g / w);
+        cs[c + 6] -= (g / w) / (STEP / SUBSTEPS); // momentum this push delivers once velocity is re-derived
       }
       for (const { i, j, length } of this.links) {
         let xx = 0;
@@ -457,7 +490,7 @@ export class World {
   /**
    * Velocity solve at the end of the substep. Contacts are driven to their target normal
    * speed with an accumulated impulse that never pulls (sequential impulses), and Coulomb
-   * friction spends at most mu × that impulse. The links of every body that has a contact are
+   * friction, an accumulated tangential vector, is held to at most mu × that impulse. The links of every body that has a contact are
    * solved here too, as velocity constraints (RATTLE's second half), in the same Gauss–Seidel
    * loop: that is what makes a bounce or a push act on the whole body with its real
    * effective mass, instead of on one vertex that the links then drag back into the ground.
@@ -465,69 +498,75 @@ export class World {
    * (exact for e = 1). Link impulses act along the link, so momentum and L stay exact.
    */
   private solveVelocities(): void {
-    const d = this.dim, { vel, pos, old, contacts: cs, body, touched, n, t, u: x } = this, mu = this.friction, h = STEP / SUBSTEPS;
-    if (cs.length === 0) return;
+    const d = this.dim, { vel, pos, contacts: cs, body, touched, n, t, u: x } = this, mu = this.friction, h = STEP / SUBSTEPS;
+    const links = this.links, imp = this.linkImpulses();
+    if (cs.length === 0) {
+      imp.fill(0);
+      return;
+    }
+    const nf = (cs.length / 7) * d;
+    if (this.fric.length < nf) this.fric = new Float64Array(nf);
+    const fric = this.fric;
+    fric.fill(0, 0, nf);
     touched.fill(0);
-    for (let c = 0; c < cs.length; c += 8) {
+    for (let c = 0; c < cs.length; c += 7) {
       const a = cs[c + 1], b = this.other(c);
       if (body[a] >= 0) touched[body[a]] = 1;
       if (b >= 0 && body[b] >= 0) touched[body[b]] = 1;
     }
+    for (let l = 0; l < links.length; l++) {
+      const { i, j } = links[l];
+      if (body[i] < 0 || !touched[body[i]]) {
+        imp[l] = 0; // no contact on this body: its links carry no load
+        continue;
+      }
+      for (let k = 0; k < d; k++) x[k] = pos[i * d + k] - pos[j * d + k];
+      this.push(vel, i, j, x, imp[l]);
+    }
     for (let iter = 0; iter < MAX_VEL_ITERS; iter++) {
       let err = 0;
-      for (let c = 0; c < cs.length; c += 8) {
+      for (let c = 0; c < cs.length; c += 7) {
         const a = cs[c + 1], b = this.other(c);
         if (iter > 0 && body[a] < 0 && (b < 0 || body[b] < 0)) continue;
         this.gap(c);
         const w = this.movable(a, b, n);
         if (w === 0) continue;
         const vn = this.relVel(c);
-        if (iter === 0) cs[c + 6] = Math.max(0, (vn - cs[c + 3]) / w); // impulse the position solve already gave
-        const P = cs[c + 6], P1 = Math.max(0, P + (cs[c + 5] - vn) / w);
+        const P = cs[c + 6], P1 = Math.max(0, P + (cs[c + 5] - vn) / w); // P starts as what the position solve gave
         this.push(vel, a, b, n, P1 - P);
         cs[c + 6] = P1;
         err = Math.max(err, Math.abs(P1 - P) * w);
-        const budget = mu * P1 - cs[c + 7];
-        if (!(budget > 0)) continue;
-        const vnNow = this.relVel(c);
+        if (mu === 0) continue;
+        // Coulomb with an accumulated vector: try to stop the tangential slip, then clamp the
+        // total friction to mu × the *current* normal impulse and apply only the change. The
+        // normal impulse can shrink in later passes as the links share the load, and the
+        // clamp then gives friction back; a running scalar total could not, so it let
+        // friction exceed mu × N (a body on a slope too steep to hold stayed stuck).
+        const f = (c / 7) * d, vnNow = this.relVel(c);
         let tt = 0;
         for (let k = 0; k < d; k++) {
           t[k] = vel[a * d + k] - (b >= 0 ? vel[b * d + k] : 0) - vnNow * n[k];
           tt += t[k] * t[k];
         }
-        if (tt === 0) continue;
-        const speed = Math.sqrt(tt);
-        for (let k = 0; k < d; k++) t[k] /= speed;
-        const wt = this.wdot(a, b, t, t);
-        if (!(wt > 0)) continue;
-        const stick = speed / wt <= budget, jt = stick ? speed / wt : budget;
-        this.push(vel, a, b, t, -jt);
-        cs[c + 7] += jt;
-        err = Math.max(err, jt * wt);
-        if (!stick) {
-          // Sliding friction acted over the whole substep: h/2 × its velocity change in
-          // position, as for any constant force in Verlet. Stopping distances are right to O(h²).
-          this.push(pos, a, b, t, -0.5 * jt * h);
-          continue;
-        }
-        // Sticking: undo this substep's tangential slip, so static friction holds with no creep.
-        let xn = 0;
+        const speed = Math.sqrt(tt), wt = speed > 0 ? this.wdot(a, b, t, t) / tt : 0;
+        let ff = 0;
         for (let k = 0; k < d; k++) {
-          x[k] = pos[a * d + k] - old[a * d + k] - (b >= 0 ? pos[b * d + k] - old[b * d + k] : 0);
-          xn += x[k] * n[k];
+          x[k] = fric[f + k]; // previous total
+          if (wt > 0) fric[f + k] -= t[k] / wt; // plus the impulse that would stop the slip
+          ff += fric[f + k] * fric[f + k];
         }
-        let ss = 0;
+        const limit = mu * P1, scale = ff > limit * limit ? limit / Math.sqrt(ff) : 1;
+        let dd = 0;
         for (let k = 0; k < d; k++) {
-          x[k] -= xn * n[k];
-          ss += x[k] * x[k];
+          fric[f + k] *= scale;
+          x[k] = fric[f + k] - x[k];
+          dd += x[k] * x[k];
         }
-        if (ss === 0) continue;
-        const slip = Math.sqrt(ss);
-        for (let k = 0; k < d; k++) x[k] /= slip;
-        const ws = this.wdot(a, b, x, x);
-        if (ws > 0) this.push(pos, a, b, x, -slip / ws);
+        this.push(vel, a, b, x, 1);
+        err = Math.max(err, Math.sqrt(dd) * w);
       }
-      for (const { i, j, length } of this.links) {
+      for (let l = 0; l < links.length; l++) {
+        const { i, j, length } = links[l];
         if (body[i] < 0 || !touched[body[i]]) continue;
         let rv = 0;
         for (let k = 0; k < d; k++) {
@@ -538,8 +577,20 @@ export class World {
         if (w === 0) continue;
         err = Math.max(err, Math.abs(rv) / length);
         this.push(vel, i, j, x, -rv / w);
+        imp[l] -= rv / w;
       }
       if (err <= VEL_TOL) break;
+    }
+    // Friction acts over the whole substep, so it moves position by h/2 × its velocity change,
+    // as any constant force does in Verlet. That makes sliding stops right to O(h²), and for a
+    // stuck contact it exactly cancels the creep of the drift (which moved everything by
+    // a·h²/2 before friction could act). Applied at the contact particle, it still moves a
+    // body's centre of mass by h/2 · F / M, and the links (which keep the centre of mass)
+    // pull the rest of the body along.
+    if (mu === 0) return;
+    for (let c = 0; c < cs.length; c += 7) {
+      for (let k = 0; k < d; k++) x[k] = fric[(c / 7) * d + k];
+      this.push(pos, cs[c + 1], this.other(c), x, 0.5 * h);
     }
   }
 }

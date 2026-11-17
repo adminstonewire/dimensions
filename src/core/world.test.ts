@@ -213,6 +213,46 @@ describe('smoke tests, dim 5 to 10', () => {
   }
 });
 
+describe('springs', () => {
+  for (const dim of DIMS) {
+    it(`dim ${dim}: two masses oscillate with period 2π√(m_reduced/k) and keep their energy`, () => {
+      const w = new World(dim), k = 50, m1 = 1, m2 = 2, L = 1, stretch = 0.2;
+      const dir = new Float64Array(dim).fill(1 / Math.sqrt(dim)), zero = new Float64Array(dim);
+      w.addParticle(zero, zero, m1, 0);
+      w.addParticle(dir.map((x) => x * (L + stretch)), zero, m2, 0);
+      w.addSpring(0, 1, k, L);
+      const mr = (m1 * m2) / (m1 + m2), T = 2 * Math.PI * Math.sqrt(mr / k), e0 = w.energy();
+      const crossings: number[] = [];
+      let prev = stretch, maxDe = 0;
+      for (let s = 1; crossings.length < 21; s++) {
+        w.step();
+        const x = Math.sqrt(w.pos.slice(dim, 2 * dim).reduce((a, p, c) => a + (p - w.pos[c]) ** 2, 0)) - L;
+        if (prev > 0 !== x > 0) crossings.push((s - 1 + prev / (prev - x)) * STEP); // linear interpolation
+        prev = x;
+        maxDe = Math.max(maxDe, Math.abs(w.energy() - e0) / e0);
+      }
+      const measured = (crossings[20] - crossings[0]) / 10;
+      console.log(`spring dim ${dim}: period ${measured.toFixed(7)} s (exact ${T.toFixed(7)}), dE/E ${maxDe.toExponential(1)}`);
+      expect(Math.abs(measured / T - 1)).toBeLessThan(1e-4);
+      expect(maxDe).toBeLessThan(1e-4);
+      expect(Math.abs(momentum(w).reduce((a, p) => a + p * p, 0))).toBeLessThan(1e-24); // internal force only
+    });
+  }
+
+  it('addSpring rejects bad input like addLink does', () => {
+    const w = new World(2);
+    w.addParticle([0, 0], [0, 0], 1, 0);
+    w.addParticle([1, 0], [0, 0], 1, 0);
+    for (const [i, j, k, L] of [
+      [0, 2, 1, 1], [-1, 1, 1, 1], [0.5, 1, 1, 1], [0, 0, 1, 1],
+      [0, 1, -1, 1], [0, 1, NaN, 1], [0, 1, Infinity, 1], [0, 1, 1, -1], [0, 1, 1, NaN],
+    ]) expect(() => w.addSpring(i, j, k, L)).toThrow();
+    expect(() => w.addLink(0, 5)).toThrow();
+    w.addSpring(0, 1, 0, 0); // zero stiffness and zero rest length are legitimate
+    expect(w.springs.length).toBe(1);
+  });
+});
+
 describe('Gauss-law potential in energy() matches the force', () => {
   for (const dim of [1, 2, 3, 4, 5]) {
     it(`dim ${dim}: −dU/dr equals the force stepped by the engine, apart and overlapping, to 1e-5`, () => {
