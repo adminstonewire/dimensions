@@ -169,8 +169,8 @@ at a time.*
   machine; across machines and browsers this is not yet verified.
 - Known limits: a ball faster than about 96 m/s (radius 0.1) can pass through a wall; near
   a 4D orbital collapse speeds diverge, so a run must stop at a collision radius;
-  friction on a linked body can exceed its limit, so a creature may stick on a slope
-  steeper than it should (known defect, fix planned); stacks of bodies are not yet tested.
+  bodies resting on other bodies, friction between a body and a box, and friction on a
+  confined body are not yet tested.
 - **"One world, sliced"** confines a creature to a line or sheet inside the 4D world. It
   teaches geometry and perception. It is **not** a universe that truly has fewer
   dimensions (the force laws above would differ — the Lab shows that), and it is **not**

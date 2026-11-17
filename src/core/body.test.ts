@@ -176,6 +176,82 @@ describe('body restitution', () => {
   }
 });
 
+/**
+ * A creature lying on a facet on flat ground (y = 0): the cross-polytope is reflected so its
+ * facet {−s·e_k} faces straight down (a reflection keeps every link length). Its centre then
+ * sits at size/√dim + radius. Tilting gravity by θ toward +x is the same physics as an
+ * incline of angle θ (the engine has no preferred direction apart from axis-aligned boxes).
+ */
+function lyingCreature(dim: number, mu: number, thetaDeg: number, drop = 0) {
+  const w = new World(dim), size = 0.5, radius = 0.1, th = (thetaDeg * Math.PI) / 180;
+  w.friction = mu;
+  w.restitution = 0;
+  w.gravity[0] = 9.81 * Math.sin(th);
+  w.gravity[1] = -9.81 * Math.cos(th);
+  const up = new Float64Array(dim);
+  up[1] = 1;
+  w.addPlane(up, 0);
+  const body = createCreature(w, new Float64Array(dim), size, 1, radius);
+  const v = Float64Array.from({ length: dim }, (_, k) => -1 / Math.sqrt(dim) + (k === 1 ? 1 : 0)); // p − q, p = −(1,..,1)/√dim, q = −e_y
+  const vv = v.reduce((s, x) => s + x * x, 0), rest = size / Math.sqrt(dim) + radius;
+  for (const p of body.particles) {
+    const o = w.pos.slice(p * dim, (p + 1) * dim), vo = o.reduce((s, x, k) => s + x * v[k], 0);
+    for (let k = 0; k < dim; k++) w.pos[p * dim + k] = o[k] - (2 * v[k] * vo) / vv + (k === 1 ? rest + drop : 0);
+  }
+  return { w, body, rest, g: 9.81, th };
+}
+
+describe('friction on a linked body', () => {
+  // mu = 0.3: friction angle 16.7°. Tipping needs more than 45° (dim 2), 35.3° (dim 3) or 30°
+  // (dim 4), even while sliding (that needs mu < tan of those), so the body never tumbles here.
+  for (const dim of [2, 3, 4]) {
+    it(`dim ${dim}: holds on a 12° slope and slides on a 25° one at g(sinθ − μcosθ), without tipping`, () => {
+      for (const deg of [12, 25]) {
+        const { w, body, rest, g, th } = lyingCreature(dim, 0.3, deg), T = 1;
+        const p0 = bodyPose(w, body);
+        for (let s = 0; s < Math.round(T / STEP); s++) w.step();
+        const p1 = bodyPose(w, body), slid = p1.centre[0] - p0.centre[0];
+        const expected = deg === 12 ? 0 : 0.5 * g * (Math.sin(th) - 0.3 * Math.cos(th)) * T * T;
+        const turn = Math.max(...p1.rotation.map((x, k) => Math.abs(x - p0.rotation[k])));
+        console.log(`body slope dim ${dim} ${deg}°: slid ${slid.toExponential(4)} (exact ${expected.toExponential(4)}), height ${(p1.centre[1] - rest).toExponential(1)}, turn ${turn.toExponential(1)}`);
+        if (expected === 0) expect(Math.abs(slid)).toBeLessThan(1e-6);
+        else expect(Math.abs(slid / expected - 1)).toBeLessThan(1e-3);
+        expect(Math.abs(p1.centre[1] - rest)).toBeLessThan(1e-5); // still lying on the facet
+        expect(turn).toBeLessThan(1e-4); // not tipping
+      }
+    });
+
+    it(`dim ${dim}: sliding on flat ground it stops after v²/(2μg)`, () => {
+      const { w, body } = lyingCreature(dim, 0.3, 0), v0 = 2, g = 9.81;
+      for (const p of body.particles) w.vel[p * dim] = v0;
+      const x0 = bodyPose(w, body).centre[0];
+      for (let s = 0; s < 120; s++) w.step();
+      const slid = bodyPose(w, body).centre[0] - x0, exact = (v0 * v0) / (2 * 0.3 * g);
+      console.log(`body slide dim ${dim}: ${slid.toFixed(6)} m (exact ${exact.toFixed(6)})`);
+      expect(Math.abs(slid / exact - 1)).toBeLessThan(1e-3);
+    });
+
+    it(`dim ${dim}: landing flat on a facet (e = 0, ${dim} vertices at once) it stops without gaining energy`, () => {
+      const { w, body, rest } = lyingCreature(dim, 0.5, 0, 0.3);
+      for (const p of body.particles) w.vel[p * dim] = 0.5; // some sideways motion for friction to remove
+      const e0 = w.energy();
+      let e = e0, maxRise = 0;
+      for (let s = 0; s < 240; s++) {
+        w.step();
+        maxRise = Math.max(maxRise, w.energy() - e);
+        e = w.energy();
+      }
+      const centre = bodyPose(w, body).centre, speed = Math.sqrt(w.vel.reduce((s, v) => s + v * v, 0));
+      const restEnergy = 9.81 * rest; // mass 1 resting on the facet: all motion gone, only m·g·y left
+      console.log(`body landing dim ${dim}: E ${e0.toFixed(4)} → ${e.toFixed(9)} J (resting ${restEnergy.toFixed(9)}), max rise per step ${maxRise.toExponential(1)} J, height ${(centre[1] - rest).toExponential(1)}, speed ${speed.toExponential(1)}`);
+      expect(maxRise / e0).toBeLessThan(1e-8); // solver precision: measured at most 2e-9 of E, once, as it comes to rest
+      expect(Math.abs(e / restEnergy - 1)).toBeLessThan(1e-5);
+      expect(Math.abs(centre[1] - rest)).toBeLessThan(1e-5);
+      expect(speed).toBeLessThan(1e-6);
+    });
+  }
+});
+
 describe('confinement ("one world, sliced")', () => {
   it('a confined creature never leaves its subspace; raising k frees the next direction', () => {
     const dim = 4, w = new World(dim);
