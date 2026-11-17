@@ -28,9 +28,12 @@ Every law a scene uses is listed, with its sources and its limits, before it is 
 
 What exists today: the engine, which applies Newton's laws to particles in any number of
 dimensions (exact for particles; bodies built from them are very slightly soft, see
-docs/PHYSICS.md), and one scene, the shadow of an N-cube, in every dimension from 0 to 10.
+docs/PHYSICS.md), and two scenes. **World** lets you drive a creature through one shared
+4D world while it is held to a line, a sheet or a room (1, 2 or 3 dimensions), seen from
+outside or through its own eye. **Hypercube** shows the shadow of an N-cube in every
+dimension from 0 to 10.
 
-What is planned: worlds of 1 to 4 space dimensions you can walk through; time shown as
+What is planned: the 4D world you can walk through in full; time shown as
 relativity describes it; and dimensions past 4 shown the way string theory says they
 would exist — curled up — and always labelled as unconfirmed theory.
 

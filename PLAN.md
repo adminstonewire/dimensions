@@ -6,7 +6,8 @@ different dimensions, from a point up to the 11 of M-theory. It has two jobs:
 1. **Public site** — anyone can open it and play.
 2. **Footage source** — the same scenes are re-rendered frame-exact in 4K for the video.
 
-Status: Phase 0 done (engine, app shell, theory reference); Phase 1 is next. This file is
+Status: Phases 0 and 1 done (engine, app shell, theory reference, and the World
+experience in 1D–3D); Phase 2, the 4D world, is next. This file is
 the source of truth for scope; `CLAUDE.md` is the rulebook for anyone (human or agent)
 writing code; `docs/PHYSICS.md` is the science, with the long form and sources in
 `docs/theory/`; `docs/DESIGN.md` is the look.
