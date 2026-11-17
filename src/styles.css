@@ -1,0 +1,184 @@
+/* ── Tokens — orchestrator-owned, see docs/DESIGN.md ───────────────────── */
+:root {
+  /* Paper: graph paper and coloured ink */
+  color-scheme: light;
+  --bg: #f6f4ee;
+  --ink: #1b2130;
+  --ink-dim: #5b6478;
+  --line: rgb(27 33 48 / 0.16);
+  --glass: rgb(246 244 238 / 0.78);
+  --grid: #d3d3d0; /* ground-plane lines: neutral and faint, so they never compete with the drawing */
+  --you: #e07b00; /* the creature is always warm */
+  --accent: oklch(0.5 0.02 260); /* 0 · graphite: a point has nothing to colour */
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+/* One ink per number of space dimensions (data-n is set from JS). Neighbours are far apart on
+   purpose, and 1–4 avoid orange so the creature always stands out. */
+:root[data-n='1'] { --accent: oklch(0.52 0.19 255); } /* blue */
+:root[data-n='2'] { --accent: oklch(0.55 0.16 150); } /* green */
+:root[data-n='3'] { --accent: oklch(0.53 0.2 15); } /* crimson */
+:root[data-n='4'] { --accent: oklch(0.5 0.21 300); } /* violet */
+:root[data-n='5'] { --accent: oklch(0.55 0.11 200); } /* teal */
+:root[data-n='6'] { --accent: oklch(0.55 0.13 110); } /* olive */
+:root[data-n='7'] { --accent: oklch(0.53 0.15 50); } /* rust */
+:root[data-n='8'] { --accent: oklch(0.45 0.17 275); } /* indigo */
+:root[data-n='9'] { --accent: oklch(0.55 0.21 340); } /* magenta */
+:root[data-n='10'] { --accent: oklch(0.55 0.13 80); } /* amber */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.4 var(--font);
+}
+
+/* ── UI styles — add below this line ───────────────────────────────────── */
+
+canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+  touch-action: none; /* dragging looks around; it must not scroll */
+}
+
+/* The overlay never eats pointer events except on the bar itself, so drags reach the canvas. */
+.ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+.ui[hidden] {
+  display: none;
+}
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.bar {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--glass);
+  border-bottom: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.bar label {
+  position: relative;
+  flex: 1 1 130px;
+  max-width: 220px;
+  min-width: 0;
+}
+.bar select {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 6px 28px 6px 10px;
+  font: inherit;
+  color: var(--ink);
+  background-color: transparent;
+  /* chevron drawn from two gradients so it follows the tokens */
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+    linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.bar select:hover {
+  border-color: var(--ink-dim);
+}
+.bar select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.bar option {
+  background: var(--bg);
+  color: var(--ink);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bar select {
+    transition: border-color 0.15s;
+  }
+}
+
+.play {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 84px; /* same width for Play and Pause, so the bar does not shift */
+  padding: 6px 12px 6px 10px;
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.play svg {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+}
+.play .i-pause,
+.play.on .i-play {
+  display: none;
+}
+.play.on .i-pause {
+  display: inline;
+}
+.play:hover {
+  border-color: var(--ink-dim);
+}
+.play.on {
+  border-color: var(--accent);
+}
+.play:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.foot {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  padding: 0 16px 14px;
+  color: var(--ink-dim);
+  text-shadow: 0 0 12px var(--bg), 0 0 3px var(--bg);
+}
+.foot p {
+  margin: 0;
+}
+.caption {
+  max-width: 60ch;
+}
+.tag {
+  flex: none;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tag b {
+  color: var(--accent); /* the one place accent appears outside focus */
+  font-weight: 600;
+}
